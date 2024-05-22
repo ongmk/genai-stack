@@ -1,32 +1,37 @@
+import os
+import re
+from typing import Any, List
 
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.embeddings import BedrockEmbeddings
-from langchain_community.embeddings.sentence_transformer import SentenceTransformerEmbeddings
-
-from langchain_openai import ChatOpenAI
-from langchain_community.chat_models import ChatOllama
-from langchain_community.chat_models import BedrockChat
-
-from langchain_community.graphs import Neo4jGraph
-
-from langchain_community.vectorstores import Neo4jVector
-
+from dotenv import load_dotenv
 from langchain.chains import RetrievalQAWithSourcesChain
 from langchain.chains.qa_with_sources import load_qa_with_sources_chain
-
 from langchain.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
-    SystemMessagePromptTemplate
+    SystemMessagePromptTemplate,
 )
-
-from typing import List, Any
-from utils import BaseLogger, extract_title_and_question
+from langchain_community.chat_models import BedrockChat, ChatOllama
+from langchain_community.embeddings import BedrockEmbeddings, OllamaEmbeddings
+from langchain_community.embeddings.sentence_transformer import (
+    SentenceTransformerEmbeddings,
+)
+from langchain_community.graphs import Neo4jGraph
+from langchain_community.vectorstores import Neo4jVector
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai import AzureChatOpenAI, ChatOpenAI, OpenAIEmbeddings
+
+from utils import BaseLogger, extract_title_and_question
+
+load_dotenv(".env")
+
+azure_gpt4v_key = os.getenv("AZURE_GPT4V_KEY")
+azure_gpt4v_endpoint = os.getenv("AZURE_GPT4V_ENDPOINT")
+azure_gpt4v_api_version = os.getenv("AZURE_GPT4V_API_VERSION")
 
 
-def load_embedding_model(embedding_model_name: str, logger=BaseLogger(), config={}):
+def load_embedding_model(
+    embedding_model_name: str, logger=BaseLogger(__name__), config={}
+):
     if embedding_model_name == "ollama":
         embeddings = OllamaEmbeddings(
             base_url=config["ollama_base_url"], model="llama2"
@@ -41,22 +46,20 @@ def load_embedding_model(embedding_model_name: str, logger=BaseLogger(), config=
         embeddings = BedrockEmbeddings()
         dimension = 1536
         logger.info("Embedding: Using AWS")
-    elif embedding_model_name == "google-genai-embedding-001":        
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001"
-        )
+    elif embedding_model_name == "google-genai-embedding-001":
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         dimension = 768
         logger.info("Embedding: Using Google Generative AI Embeddings")
     else:
         embeddings = SentenceTransformerEmbeddings(
-            model_name="all-MiniLM-L6-v2", cache_folder="/embedding_model"
+            model_name="all-MiniLM-L6-v2", cache_folder="./embedding_model"
         )
         dimension = 384
         logger.info("Embedding: Using SentenceTransformer")
     return embeddings, dimension
 
 
-def load_llm(llm_name: str, logger=BaseLogger(), config={}):
+def load_llm(llm_name: str, logger=BaseLogger(__name__), config={}):
     if llm_name == "gpt-4":
         logger.info("LLM: Using GPT-4")
         return ChatOpenAI(temperature=0, model_name="gpt-4", streaming=True)
@@ -70,6 +73,9 @@ def load_llm(llm_name: str, logger=BaseLogger(), config={}):
             model_kwargs={"temperature": 0.0, "max_tokens_to_sample": 1024},
             streaming=True,
         )
+    elif llm_name == "azure_openai":
+        logger.info("LLM: Using Azure OpenAI deployment")
+        return AzureChatOpenAI(**config)
     elif len(llm_name):
         logger.info(f"LLM: Using Ollama: {llm_name}")
         return ChatOllama(

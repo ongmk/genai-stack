@@ -1,12 +1,12 @@
 import os
+
 import requests
 from dotenv import load_dotenv
 from langchain_community.graphs import Neo4jGraph
-import streamlit as st
-from streamlit.logger import get_logger
+from tqdm import tqdm
+
 from chains import load_embedding_model
-from utils import create_constraints, create_vector_index
-from PIL import Image
+from utils import BaseLogger, create_constraints, create_vector_index
 
 load_dotenv(".env")
 
@@ -18,7 +18,7 @@ embedding_model_name = os.getenv("EMBEDDING_MODEL")
 # Remapping for Langchain Neo4j integration
 os.environ["NEO4J_URL"] = url
 
-logger = get_logger(__name__)
+logger = BaseLogger(__name__)
 
 so_api_base_url = "https://api.stackexchange.com/2.3/search/advanced"
 
@@ -35,7 +35,7 @@ create_vector_index(neo4j_graph, dimension)
 
 def load_so_data(tag: str = "neo4j", page: int = 1) -> None:
     parameters = (
-        f"?pagesize=100&page={page}&order=desc&sort=creation&answers=1&tagged={tag}"
+        f"?pagesize=100&page={page}&order=desc&sort=votes&answers=1&tagged={tag}"
         "&site=stackoverflow&filter=!*236eb_eL9rai)MOSNZ-6D3Q6ZKb0buI*IVotWaTb"
     )
     data = requests.get(so_api_base_url + parameters).json()
@@ -95,54 +95,32 @@ def insert_so_data(data: dict) -> None:
     neo4j_graph.query(import_query, {"data": data["items"]})
 
 
-# Streamlit
-def get_tag() -> str:
-    input_text = st.text_input(
-        "Which tag questions do you want to import?", value="neo4j"
-    )
-    return input_text
+def get_tag():
+    tag = input("Enter StackOverflow tag to load: ") or "large-language-model"
+    print(tag)
+    return tag
 
 
 def get_pages():
-    col1, col2 = st.columns(2)
-    with col1:
-        num_pages = st.number_input(
-            "Number of pages (100 questions per page)", step=1, min_value=1
-        )
-    with col2:
-        start_page = st.number_input("Start page", step=1, min_value=1)
-    st.caption("Only questions with answers will be imported.")
-    return (int(num_pages), int(start_page))
+    num_pages = int(input("Enter number of pages to load: ") or "25")
+    print(num_pages)
+    start_page = int(input("Enter the starting page number: ") or "1")
+    print(start_page)
+    return num_pages, start_page
 
 
-def render_page():
-    datamodel_image = Image.open("./images/datamodel.png")
-    st.header("StackOverflow Loader")
-    st.subheader("Choose StackOverflow tags to load into Neo4j")
-    st.caption("Go to http://localhost:7474/ to explore the graph.")
+def main():
+    print("StackOverflow Loader")
+    print("Choose StackOverflow tags to load into Neo4j")
 
     user_input = get_tag()
     num_pages, start_page = get_pages()
 
-    if st.button("Import", type="primary"):
-        with st.spinner("Loading... This might take a minute or two."):
-            try:
-                for page in range(1, num_pages + 1):
-                    load_so_data(user_input, start_page + (page - 1))
-                st.success("Import successful", icon="✅")
-                st.caption("Data model")
-                st.image(datamodel_image)
-                st.caption("Go to http://localhost:7474/ to interact with the database")
-            except Exception as e:
-                st.error(f"Error: {e}", icon="🚨")
-    with st.expander("Highly ranked questions rather than tags?"):
-        if st.button("Import highly ranked questions"):
-            with st.spinner("Loading... This might take a minute or two."):
-                try:
-                    load_high_score_so_data()
-                    st.success("Import successful", icon="✅")
-                except Exception as e:
-                    st.error(f"Error: {e}", icon="🚨")
+    print("Loading... This might take a minute or two.")
+    for page in tqdm(range(start_page, num_pages + 1)):
+        load_so_data(user_input, +(page - 1))
+    print("Import successful")
 
 
-render_page()
+if __name__ == "__main__":
+    main()

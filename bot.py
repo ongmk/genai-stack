@@ -1,176 +1,129 @@
+import html
 import os
+from typing import Any, Optional, Sequence
+from uuid import UUID
 
-import streamlit as st
-from streamlit.logger import get_logger
+from dotenv import load_dotenv
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain_community.graphs import Neo4jGraph
-from dotenv import load_dotenv
-from utils import (
-    create_vector_index,
-)
+from langchain_core.agents import AgentFinish
+from langchain_core.documents import Document
+from langchain_core.outputs import LLMResult
+
 from chains import (
-    load_embedding_model,
-    load_llm,
     configure_llm_only_chain,
     configure_qa_rag_chain,
-    generate_ticket,
+    load_embedding_model,
+    load_llm,
 )
+from utils import BaseLogger, create_vector_index
 
 load_dotenv(".env")
 
 url = os.getenv("NEO4J_URI")
 username = os.getenv("NEO4J_USERNAME")
 password = os.getenv("NEO4J_PASSWORD")
-ollama_base_url = os.getenv("OLLAMA_BASE_URL")
 embedding_model_name = os.getenv("EMBEDDING_MODEL")
 llm_name = os.getenv("LLM")
 # Remapping for Langchain Neo4j integration
 os.environ["NEO4J_URL"] = url
 
-logger = get_logger(__name__)
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_GPT4V_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_GPT4V_ENDPOINT")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_GPT4V_API_VERSION")
+AZURE_OPENAI_CHAT_DEPLOYMENT_NAME = "gpt-4-vision-deploy"
+
+logger = BaseLogger(__name__)
 
 # if Neo4j is local, you can go to http://localhost:7474/ to browse the database
 neo4j_graph = Neo4jGraph(url=url, username=username, password=password)
-embeddings, dimension = load_embedding_model(
-    embedding_model_name, config={"ollama_base_url": ollama_base_url}, logger=logger
-)
+embeddings, dimension = load_embedding_model(embedding_model_name)
 create_vector_index(neo4j_graph, dimension)
 
 
-class StreamHandler(BaseCallbackHandler):
-    def __init__(self, container, initial_text=""):
-        self.container = container
-        self.text = initial_text
+class CallbackHandler(BaseCallbackHandler):
+    def on_llm_end(
+        self,
+        response: LLMResult,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs: Any,
+    ) -> Any:
+        logger.info(response.llm_output["token_usage"])
 
-    def on_llm_new_token(self, token: str, **kwargs) -> None:
-        self.text += token
-        self.container.markdown(self.text)
+    def on_retriever_end(
+        self,
+        documents: Sequence[Document],
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs: Any,
+    ) -> Any:
+        logger.info(f"Retrieved {len(documents)} documents")
+        for idx, doc in enumerate(documents):
+            title = doc.page_content.split("\n")[0].lstrip("##Question ")
+            title = html.unescape(title)
+            source = doc.metadata.get("source", "No URL provided")
+            logger.info(f"Document {idx}: {title} - {source}")
 
 
-llm = load_llm(llm_name, logger=logger, config={"ollama_base_url": ollama_base_url})
+llm_config = dict(
+    api_key=AZURE_OPENAI_API_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    openai_api_version=AZURE_OPENAI_API_VERSION,
+    azure_deployment=AZURE_OPENAI_CHAT_DEPLOYMENT_NAME,
+    temperature=0,
+    max_tokens=4096,
+    seed=42,
+)
+from langchain_core.documents.base import Document
+
+llm = load_llm(
+    llm_name,
+    config=llm_config,
+)
 
 llm_chain = configure_llm_only_chain(llm)
 rag_chain = configure_qa_rag_chain(
     llm, embeddings, embeddings_store_url=url, username=username, password=password
 )
 
-# Streamlit UI
-styl = f"""
-<style>
-    /* not great support for :has yet (hello FireFox), but using it for now */
-    .element-container:has([aria-label="Select RAG mode"]) {{
-      position: fixed;
-      bottom: 33px;
-      background: white;
-      z-index: 101;
-    }}
-    .stChatFloatingInputContainer {{
-        bottom: 20px;
-    }}
-
-    /* Generate ticket text area */
-    textarea[aria-label="Description"] {{
-        height: 200px;
-    }}
-</style>
-"""
-st.markdown(styl, unsafe_allow_html=True)
-
 
 def chat_input():
-    user_input = st.chat_input("What coding issue can I help you resolve today?")
+    chat_history = {"LLM_ONLY": [], "VECTOR_GRAPH": []}
 
-    if user_input:
-        with st.chat_message("user"):
-            st.write(user_input)
-        with st.chat_message("assistant"):
-            st.caption(f"RAG: {name}")
-            stream_handler = StreamHandler(st.empty())
-            result = output_function(
-                {"question": user_input, "chat_history": []}, callbacks=[stream_handler]
-            )["answer"]
-            output = result
-            st.session_state[f"user_input"].append(user_input)
-            st.session_state[f"generated"].append(output)
-            st.session_state[f"rag_mode"].append(name)
+    while True:
+        # Get user input from the terminal
+        user_input = input("What coding issue can I help you resolve today? ")
 
+        # Check if the user wants to exit the chat
+        if user_input.lower() in ["exit", "quit"]:
+            print("Exiting the chat. Goodbye!")
+            break
 
-def display_chat():
-    # Session state
-    if "generated" not in st.session_state:
-        st.session_state[f"generated"] = []
+        if user_input:
+            # Print the user's question to the terminal
+            print(f"You: {user_input}")
 
-    if "user_input" not in st.session_state:
-        st.session_state[f"user_input"] = []
+            callback_handler = CallbackHandler()
+            # Call the output function and get the result
+            for mode, output_function in {
+                "LLM_ONLY": llm_chain,
+                "VECTOR_GRAPH": rag_chain,
+            }.items():
+                result = output_function(
+                    {"question": user_input, "chat_history": chat_history[mode]},
+                    callbacks=[callback_handler],
+                )
+                output = result.get("answer", "Sorry, I couldn't generate a response.")
 
-    if "rag_mode" not in st.session_state:
-        st.session_state[f"rag_mode"] = []
+                # Update the chat history
+                chat_history[mode].append({"question": user_input, "answer": output})
 
-    if st.session_state[f"generated"]:
-        size = len(st.session_state[f"generated"])
-        # Display only the last three exchanges
-        for i in range(max(size - 3, 0), size):
-            with st.chat_message("user"):
-                st.write(st.session_state[f"user_input"][i])
-
-            with st.chat_message("assistant"):
-                st.caption(f"RAG: {st.session_state[f'rag_mode'][i]}")
-                st.write(st.session_state[f"generated"][i])
-
-        with st.expander("Not finding what you're looking for?"):
-            st.write(
-                "Automatically generate a draft for an internal ticket to our support team."
-            )
-            st.button(
-                "Generate ticket",
-                type="primary",
-                key="show_ticket",
-                on_click=open_sidebar,
-            )
-        with st.container():
-            st.write("&nbsp;")
+                # Print the assistant's answer to the terminal
+                print(f"[{mode}] Assistant: {output}\n")
+            print(f"------------------------\n")
 
 
-def mode_select() -> str:
-    options = ["Disabled", "Enabled"]
-    return st.radio("Select RAG mode", options, horizontal=True)
-
-
-name = mode_select()
-if name == "LLM only" or name == "Disabled":
-    output_function = llm_chain
-elif name == "Vector + Graph" or name == "Enabled":
-    output_function = rag_chain
-
-
-def open_sidebar():
-    st.session_state.open_sidebar = True
-
-
-def close_sidebar():
-    st.session_state.open_sidebar = False
-
-
-if not "open_sidebar" in st.session_state:
-    st.session_state.open_sidebar = False
-if st.session_state.open_sidebar:
-    new_title, new_question = generate_ticket(
-        neo4j_graph=neo4j_graph,
-        llm_chain=llm_chain,
-        input_question=st.session_state[f"user_input"][-1],
-    )
-    with st.sidebar:
-        st.title("Ticket draft")
-        st.write("Auto generated draft ticket")
-        st.text_input("Title", new_title)
-        st.text_area("Description", new_question)
-        st.button(
-            "Submit to support team",
-            type="primary",
-            key="submit_ticket",
-            on_click=close_sidebar,
-        )
-
-
-display_chat()
 chat_input()

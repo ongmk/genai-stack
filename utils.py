@@ -1,6 +1,19 @@
+import logging
+
+from neo4j.exceptions import ClientError
+
+
 class BaseLogger:
-    def __init__(self) -> None:
-        self.info = print
+    def __init__(self, name):
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+
+    def info(self, message):
+        self.logger.info(message)
 
 
 def extract_title_and_question(input_string):
@@ -30,12 +43,12 @@ def create_vector_index(driver, dimension: int) -> None:
     index_query = "CALL db.index.vector.createNodeIndex('stackoverflow', 'Question', 'embedding', $dimension, 'cosine')"
     try:
         driver.query(index_query, {"dimension": dimension})
-    except:  # Already exists
+    except ClientError:  # Already exists
         pass
     index_query = "CALL db.index.vector.createNodeIndex('top_answers', 'Answer', 'embedding', $dimension, 'cosine')"
     try:
         driver.query(index_query, {"dimension": dimension})
-    except:  # Already exists
+    except ClientError:  # Already exists
         pass
 
 
