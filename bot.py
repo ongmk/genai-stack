@@ -75,7 +75,6 @@ llm_config = dict(
     azure_deployment=AZURE_OPENAI_CHAT_DEPLOYMENT_NAME,
     temperature=0,
     max_tokens=4096,
-    seed=42,
 )
 from langchain_core.documents.base import Document
 
